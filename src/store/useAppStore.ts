@@ -55,26 +55,152 @@ const initialState: AppState = {
   showImageModal: false,
 }
 
-// Mock AI functions - 실제로는 Claude API를 호출
-async function mockAnalyzeUrl(_url: string): Promise<ProductInfo> {
-  await new Promise(resolve => setTimeout(resolve, 2000))
-  return {
-    name: '클린포어 모공 흡입기',
-    category: '뷰티/스킨케어',
-    salePrice: 49000,
-    originalPrice: 98000,
-    targetAge: ['20대', '30대'],
-    targetGender: 'female',
-    features: [
-      '3단계 흡입력 조절',
-      'USB 충전식',
-      '5가지 교체형 헤드',
-      '방수 기능',
-      'LED 디스플레이'
-    ],
-    promotion: '오늘만 특가 + 사은품 증정',
-    customSellingPoints: [],
+// 실제 URL 분석 함수
+async function analyzeUrlContent(url: string): Promise<ProductInfo> {
+  try {
+    // CORS 프록시를 사용하여 웹페이지 내용 가져오기
+    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
+    const response = await fetch(proxyUrl)
+
+    if (!response.ok) {
+      throw new Error('URL을 가져올 수 없습니다.')
+    }
+
+    const html = await response.text()
+
+    // HTML에서 정보 추출
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(html, 'text/html')
+
+    // 제품명 추출 (다양한 셀렉터 시도)
+    const productName =
+      doc.querySelector('meta[property="og:title"]')?.getAttribute('content') ||
+      doc.querySelector('h1')?.textContent?.trim() ||
+      doc.querySelector('.product-name, .product-title, [class*="product"][class*="name"], [class*="product"][class*="title"]')?.textContent?.trim() ||
+      doc.querySelector('title')?.textContent?.trim()?.split('|')[0]?.split('-')[0]?.trim() ||
+      '제품명을 찾을 수 없습니다'
+
+    // 가격 추출
+    const priceText = html.match(/[\d,]+\s*원/g) || []
+    const prices = priceText.map(p => parseInt(p.replace(/[^\d]/g, ''))).filter(p => p > 0 && p < 10000000)
+    const uniquePrices = [...new Set(prices)].sort((a, b) => a - b)
+
+    const salePrice = uniquePrices[0] || 0
+    const originalPrice = uniquePrices.length > 1 ? uniquePrices[uniquePrices.length - 1] : salePrice
+
+    // 카테고리 추출
+    const categoryMeta = doc.querySelector('meta[property="product:category"]')?.getAttribute('content') ||
+      doc.querySelector('meta[name="keywords"]')?.getAttribute('content')?.split(',')[0]?.trim() || ''
+
+    const category = detectCategory(productName + ' ' + categoryMeta + ' ' + html.substring(0, 5000))
+
+    // 특징 추출 (리스트 아이템에서)
+    const features: string[] = []
+    const listItems = doc.querySelectorAll('li, .feature, [class*="feature"], [class*="benefit"], .info-item')
+    listItems.forEach(item => {
+      const text = item.textContent?.trim() || ''
+      if (text.length > 5 && text.length < 50 && !text.includes('로그인') && !text.includes('회원') && !text.includes('장바구니')) {
+        if (features.length < 5 && !features.includes(text)) {
+          features.push(text)
+        }
+      }
+    })
+
+    // 설명에서 특징 추출
+    const description = doc.querySelector('meta[property="og:description"]')?.getAttribute('content') ||
+      doc.querySelector('meta[name="description"]')?.getAttribute('content') || ''
+
+    if (features.length < 3 && description) {
+      const descFeatures = description.split(/[,./]/).filter(s => s.trim().length > 5 && s.trim().length < 50)
+      descFeatures.forEach(f => {
+        if (features.length < 5 && !features.includes(f.trim())) {
+          features.push(f.trim())
+        }
+      })
+    }
+
+    // 타깃 추정
+    const targetAge = detectTargetAge(html)
+    const targetGender = detectTargetGender(html, productName, category)
+
+    // 프로모션 추출
+    const promotionKeywords = ['특가', '할인', '무료배송', '사은품', '이벤트', 'SALE', '증정']
+    let promotion = ''
+    promotionKeywords.forEach(keyword => {
+      const match = html.match(new RegExp(`[^<>]{0,20}${keyword}[^<>]{0,30}`, 'i'))
+      if (match && !promotion) {
+        promotion = match[0].trim()
+      }
+    })
+
+    return {
+      name: productName.substring(0, 50),
+      category,
+      salePrice,
+      originalPrice: originalPrice > salePrice ? originalPrice : 0,
+      targetAge,
+      targetGender,
+      features: features.length > 0 ? features : ['제품 특징을 직접 입력해 주세요'],
+      promotion,
+      customSellingPoints: [],
+    }
+  } catch (error) {
+    console.error('URL 분석 오류:', error)
+    throw new Error('URL 분석에 실패했습니다. 직접 입력 모드를 사용해 주세요.')
   }
+}
+
+// 카테고리 감지
+function detectCategory(text: string): string {
+  const categories: Record<string, string[]> = {
+    '뷰티/스킨케어': ['화장품', '스킨케어', '뷰티', '화장', '피부', '모공', '미백', '주름', '세럼', '크림', '에센스', '마스크팩'],
+    '헬스/건강식품': ['건강', '비타민', '영양제', '다이어트', '운동', '헬스', '프로틴', '유산균'],
+    '식품/음료': ['식품', '음료', '커피', '차', '간식', '식사', '밀키트', '건강식품'],
+    '패션/의류': ['패션', '의류', '옷', '신발', '가방', '액세서리', '쥬얼리'],
+    '디지털/가전': ['전자', '디지털', '가전', '전기', '충전', 'LED', 'USB', '배터리'],
+    '생활용품': ['생활', '주방', '욕실', '청소', '인테리어', '가구'],
+  }
+
+  const lowerText = text.toLowerCase()
+  for (const [category, keywords] of Object.entries(categories)) {
+    for (const keyword of keywords) {
+      if (lowerText.includes(keyword.toLowerCase())) {
+        return category
+      }
+    }
+  }
+  return '기타'
+}
+
+// 타깃 연령대 감지
+function detectTargetAge(html: string): string[] {
+  const ages: string[] = []
+  if (html.includes('10대') || html.includes('청소년')) ages.push('10대')
+  if (html.includes('20대') || html.includes('젊은') || html.includes('영')) ages.push('20대')
+  if (html.includes('30대') || html.includes('직장인')) ages.push('30대')
+  if (html.includes('40대') || html.includes('중년')) ages.push('40대')
+  if (html.includes('50대')) ages.push('50대')
+  if (html.includes('60대') || html.includes('시니어')) ages.push('60대 이상')
+
+  return ages.length > 0 ? ages : ['20대', '30대'] // 기본값
+}
+
+// 타깃 성별 감지
+function detectTargetGender(html: string, productName: string, category: string): 'male' | 'female' | 'all' {
+  const femaleKeywords = ['여성', '여자', '그녀', '엄마', '화장품', '스킨케어', '뷰티', '네일', '립스틱']
+  const maleKeywords = ['남성', '남자', '그', '아빠', '면도', '쉐이빙']
+
+  const text = (html + productName + category).toLowerCase()
+
+  let femaleScore = 0
+  let maleScore = 0
+
+  femaleKeywords.forEach(k => { if (text.includes(k)) femaleScore++ })
+  maleKeywords.forEach(k => { if (text.includes(k)) maleScore++ })
+
+  if (femaleScore > maleScore + 1) return 'female'
+  if (maleScore > femaleScore + 1) return 'male'
+  return 'all'
 }
 
 async function mockGenerateSellingPoints(_productInfo: ProductInfo): Promise<SellingPoint[]> {
@@ -218,7 +344,7 @@ export const useAppStore = create<AppState & AppActions>()(
       analyzeUrl: async () => {
         set({ isAnalyzing: true })
         try {
-          const productInfo = await mockAnalyzeUrl(get().urlToAnalyze)
+          const productInfo = await analyzeUrlContent(get().urlToAnalyze)
           set({ productInfo, isAnalyzing: false })
         } catch (error) {
           set({ isAnalyzing: false })
