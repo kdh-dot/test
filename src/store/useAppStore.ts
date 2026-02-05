@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { AppState, AppActions, ProductInfo, SellingPoint, GenerationOptions, ImageOptions, GeneratedCopy, Project } from '../types'
 import { generateId } from '../lib/utils'
+import { generateSellingPointsAPI, generateCopiesAPI, generateImagePromptAPI } from '../lib/api'
 
 const initialProductInfo: ProductInfo = {
   name: '',
@@ -571,9 +572,15 @@ export const useAppStore = create<AppState & AppActions>()(
       })),
       generateSellingPoints: async () => {
         set({ isGeneratingSellingPoints: true })
-        await new Promise(r => setTimeout(r, 1000))
-        const sellingPoints = generateSellingPointsFromProduct(get().productInfo)
-        set({ sellingPoints, isGeneratingSellingPoints: false })
+        try {
+          const sellingPoints = await generateSellingPointsAPI(get().productInfo)
+          set({ sellingPoints, isGeneratingSellingPoints: false })
+        } catch (error) {
+          console.error('소구점 생성 실패:', error)
+          // 폴백: 로컬 생성
+          const sellingPoints = generateSellingPointsFromProduct(get().productInfo)
+          set({ sellingPoints, isGeneratingSellingPoints: false })
+        }
       },
 
       // Generation options
@@ -584,13 +591,23 @@ export const useAppStore = create<AppState & AppActions>()(
       // Copies
       generateCopies: async () => {
         set({ isGeneratingCopies: true })
-        await new Promise(r => setTimeout(r, 2000))
-        const copies = generateCopiesFromSellingPoints(
-          get().productInfo,
-          get().sellingPoints,
-          get().options
-        )
-        set({ copies, isGeneratingCopies: false })
+        try {
+          const copies = await generateCopiesAPI(
+            get().productInfo,
+            get().sellingPoints,
+            get().options
+          )
+          set({ copies, isGeneratingCopies: false })
+        } catch (error) {
+          console.error('카피 생성 실패:', error)
+          // 폴백: 로컬 생성
+          const copies = generateCopiesFromSellingPoints(
+            get().productInfo,
+            get().sellingPoints,
+            get().options
+          )
+          set({ copies, isGeneratingCopies: false })
+        }
       },
       toggleFavorite: (id) => set((state) => ({
         copies: state.copies.map((c) => c.id === id ? { ...c, isFavorite: !c.isFavorite } : c)
@@ -606,8 +623,15 @@ export const useAppStore = create<AppState & AppActions>()(
         const selectedCopy = copies.find((c) => c.id === selectedCopyId)
         if (!selectedCopy) return
 
-        const imagePrompt = generateImagePromptFromCopy(selectedCopy, productInfo, imageOptions)
-        set({ imagePrompt })
+        try {
+          const imagePrompt = await generateImagePromptAPI(selectedCopy, productInfo, imageOptions)
+          set({ imagePrompt })
+        } catch (error) {
+          console.error('이미지 프롬프트 생성 실패:', error)
+          // 폴백: 로컬 생성
+          const imagePrompt = generateImagePromptFromCopy(selectedCopy, productInfo, imageOptions)
+          set({ imagePrompt })
+        }
       },
       generateImages: async () => {
         set({ isGeneratingImages: true })
