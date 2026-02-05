@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { AppState, AppActions, ProductInfo, SellingPoint, GenerationOptions, ImageOptions, GeneratedCopy, Project } from '../types'
 import { generateId } from '../lib/utils'
-import { generateSellingPointsAPI, generateCopiesAPI, generateImagePromptAPI } from '../lib/api'
+import { analyzeUrlAPI, generateSellingPointsAPI, generateCopiesAPI, generateImagePromptAPI } from '../lib/api'
 
 const initialProductInfo: ProductInfo = {
   name: '',
@@ -534,11 +534,18 @@ export const useAppStore = create<AppState & AppActions>()(
       analyzeUrl: async () => {
         set({ isAnalyzing: true })
         try {
-          const productInfo = await analyzeUrlContent(get().urlToAnalyze)
+          const productInfo = await analyzeUrlAPI(get().urlToAnalyze)
           set({ productInfo, isAnalyzing: false })
         } catch (error) {
-          set({ isAnalyzing: false })
-          throw error
+          console.error('URL 분석 실패:', error)
+          // 폴백: 로컬 분석
+          try {
+            const productInfo = await analyzeUrlContent(get().urlToAnalyze)
+            set({ productInfo, isAnalyzing: false })
+          } catch {
+            set({ isAnalyzing: false })
+            throw error
+          }
         }
       },
 

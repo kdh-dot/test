@@ -24,6 +24,108 @@ async function apiCall<T>(endpoint: string, data: object): Promise<T> {
   return response.json()
 }
 
+// URL 분석 API
+export async function analyzeUrlAPI(url: string): Promise<ProductInfo> {
+  if (!USE_REAL_API) {
+    // 로컬 분석 (CORS 프록시 사용)
+    return analyzeUrlLocal(url)
+  }
+
+  try {
+    const result = await apiCall<ProductInfo>('/analyze-url', { url })
+    return {
+      ...result,
+      customSellingPoints: result.customSellingPoints || [],
+    }
+  } catch (error) {
+    console.error('URL 분석 API 실패, 로컬 분석으로 전환:', error)
+    return analyzeUrlLocal(url)
+  }
+}
+
+// 로컬 URL 분석 (CORS 프록시 사용)
+async function analyzeUrlLocal(url: string): Promise<ProductInfo> {
+  try {
+    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
+    const response = await fetch(proxyUrl)
+
+    if (!response.ok) {
+      throw new Error('URL을 가져올 수 없습니다.')
+    }
+
+    const html = await response.text()
+
+    // 제품명 추출
+    const ogTitleMatch = html.match(/<meta[^>]*property="og:title"[^>]*content="([^"]*)"[^>]*>/i)
+    const h1Match = html.match(/<h1[^>]*>([^<]*)<\/h1>/i)
+    const titleMatch = html.match(/<title>([^<]*)<\/title>/i)
+
+    const productName =
+      ogTitleMatch?.[1] ||
+      h1Match?.[1]?.trim() ||
+      titleMatch?.[1]?.split('|')[0]?.split('-')[0]?.trim() ||
+      '제품명을 입력해주세요'
+
+    // 가격 추출
+    const priceMatches = html.match(/[\d,]+\s*원/g) || []
+    const prices = priceMatches
+      .map(p => parseInt(p.replace(/[^\d]/g, '')))
+      .filter(p => p > 1000 && p < 10000000)
+      .sort((a, b) => a - b)
+
+    const uniquePrices = [...new Set(prices)]
+    const salePrice = uniquePrices[0] || 0
+    const originalPrice = uniquePrices.length > 1 ? uniquePrices[uniquePrices.length - 1] : 0
+
+    // 카테고리 감지
+    const category = detectCategoryFromText(productName + ' ' + html.substring(0, 5000))
+
+    // 특징 추출 (OG description 또는 메타 description 사용)
+    const ogDescMatch = html.match(/<meta[^>]*property="og:description"[^>]*content="([^"]*)"[^>]*>/i)
+    const metaDescMatch = html.match(/<meta[^>]*name="description"[^>]*content="([^"]*)"[^>]*>/i)
+    const description = ogDescMatch?.[1] || metaDescMatch?.[1] || ''
+
+    const features = description
+      ? [description.substring(0, 50)]
+      : ['제품 특징을 직접 입력해주세요']
+
+    return {
+      name: productName.substring(0, 50),
+      category,
+      salePrice,
+      originalPrice,
+      targetAge: ['20대', '30대'],
+      targetGender: 'all',
+      features,
+      promotion: '',
+      customSellingPoints: [],
+    }
+  } catch (error) {
+    console.error('로컬 URL 분석 오류:', error)
+    throw new Error('URL 분석에 실패했습니다. 직접 입력 모드를 사용해 주세요.')
+  }
+}
+
+function detectCategoryFromText(text: string): string {
+  const categories: Record<string, string[]> = {
+    '뷰티/스킨케어': ['화장품', '스킨케어', '뷰티', '피부', '세럼', '크림', '에센스', '미백', '주름'],
+    '뷰티/디바이스': ['디바이스', '마사지기', '미용기기', 'LED', '갈바닉', '초음파'],
+    '헬스/건강식품': ['건강', '비타민', '영양제', '다이어트', '프로틴', '유산균'],
+    '식품/음료': ['식품', '음료', '커피', '차', '간식'],
+    '패션/의류': ['패션', '의류', '옷', '신발', '가방'],
+    '디지털/가전': ['전자', '디지털', '가전', '충전기', '이어폰'],
+    '생활용품': ['생활', '주방', '욕실', '청소'],
+  }
+
+  const lowerText = text.toLowerCase()
+  for (const [category, keywords] of Object.entries(categories)) {
+    if (keywords.some(k => lowerText.includes(k))) {
+      return category
+    }
+  }
+  return '기타'
+}
+
 // 소구점 생성
 export async function generateSellingPointsAPI(productInfo: ProductInfo): Promise<SellingPoint[]> {
   if (!USE_REAL_API) {
